@@ -1,5 +1,5 @@
 import { getDefaultConfig } from "@rainbow-me/rainbowkit";
-import { type Address, type Chain, http } from "viem";
+import { type Address, type Chain } from "viem";
 import { sepolia, localhost } from "viem/chains";
 
 export function paymentTokenAddress(chain: Chain | undefined): Address {
@@ -28,14 +28,10 @@ export function helloPyusdAddress(chain: Chain | undefined): Address {
   }
 }
 
-// Moving our wagmi config here cleans up our App.tsx
-// You can update App.tsx to import this.
+
 export const wagmiConfig = getDefaultConfig({
-  appName: "Hello PYUSD",
-  projectId: import.meta.env.VITE_WALLETCONNECT_PROJECT_ID,
+  appName: 'Parmelia',
+  projectId: '41ba725fce5fa6ba53da8cb6192b41ae',
   chains: [sepolia, localhost],
-  transports: {
-    [localhost.id]: http("http://localhost:8545"),
-    [sepolia.id]: http(import.meta.env.VITE_SEPOLIA_RPC_URL),
-  },
+  ssr: false,
 });
