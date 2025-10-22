@@ -45,8 +45,7 @@ coverage
 coverage.json
 .hardhat
 
-# Foundry
-lib/
+packages/contracts/lib/
 cache_hardhat/
 out/
 
