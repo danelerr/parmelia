@@ -24,6 +24,8 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
     IUniswapV2Router02 public immutable router;
     uint8  public immutable pyusdDecimals; // gas-save: cacheamos decimales
     uint8 public immutable wethDecimals;
+    address[] public swapPath;
+
 
     // --- Config estrategia (tuneable en runtime) ---
     bytes32 public ethUsdPriceFeedId;       // feed ETH/USD
@@ -69,6 +71,10 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
         router= IUniswapV2Router02(_router);
         wethDecimals = IERC20Metadata(_weth).decimals();
         pyusdDecimals = IERC20Metadata(_pyusd).decimals();
+
+        // Default route: PYUSD -> WETH
+        swapPath.push(address(PYUSD));
+        swapPath.push(address(WETH));
 
         // Set inicial
         ethUsdPriceFeedId  = _ethUsdFeedId;
@@ -158,8 +164,8 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
 
         uint256[] memory amounts = router.swapExactTokensForTokens(
             amountIn,
-            minOut1e18,               // WETH usualmente 18 dec
-            path,
+            minOut,
+            swapPath,
             address(this),
             block.timestamp + 300      // 5 min de ventana
         );
@@ -172,7 +178,6 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
                 PYUSD.safeTransfer(msg.sender, reward);
             }
         }
-
         emit StrategyExecuted(amounts[0], amounts[1], price1e18, block.timestamp);
     }
 
@@ -199,14 +204,34 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
         emit StrategyParamsUpdated();
     }
 
+    function setSwapPath(address[] calldata path) external onlyOwner {
+        require(path.length >= 2, "bad len");
+        require(path[0] == address(PYUSD), "start PYUSD");
+        require(path[path.length - 1] == address(WETH), "end WETH");
+        delete swapPath;
+        for (uint256 i = 0; i < path.length; i++) swapPath.push(path[i]);
+        emit StrategyParamsUpdated();
+    }
+
+
     // Setters granulares (por si expones sliders individuales)
     function setMaxEthPriceUsd1e18(uint256 v) external onlyOwner { require(v > 0, "bad"); maxEthPriceUsd1e18 = v; emit StrategyParamsUpdated(); }
     function setSwapChunkPYUSD(uint256 v)     external onlyOwner { swapChunkPYUSD = v; emit StrategyParamsUpdated(); }
     function setSlippageBps(uint256 v)        external onlyOwner { require(v <= 10_000, "bad"); slippageBps = v; emit StrategyParamsUpdated(); }
     function setMaxPriceAge(uint256 v)        external onlyOwner { maxPriceAge = v; emit StrategyParamsUpdated(); }
     function setFeedId(bytes32 id)            external onlyOwner { ethUsdPriceFeedId = id; emit StrategyParamsUpdated(); }
-    function setConfMultiplier(uint256 v)     external onlyOwner { confMultiplier = v; emit StrategyParamsUpdated(); }
-    function setExecRewardBps(uint256 v)      external onlyOwner { require(v <= 200, "reward too high"); execRewardBps = v; emit StrategyParamsUpdated(); }
+
+    function setConfMultiplier(uint256 v) external onlyOwner {
+        require(v <= 3, "too big");
+        confMultiplier = v;
+        emit StrategyParamsUpdated();
+    }
+
+    function setExecRewardBps(uint256 v) external onlyOwner {
+        require(v <= 200, "reward too high");
+        execRewardBps = v;
+        emit StrategyParamsUpdated();
+    }
 
     function pause() external onlyOwner { _pause(); }
     function unpause() external onlyOwner { _unpause(); }
