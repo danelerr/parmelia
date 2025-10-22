@@ -23,6 +23,7 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
     IPyth  public immutable pyth;
     IUniswapV2Router02 public immutable router;
     uint8  public immutable pyusdDecimals; // gas-save: cacheamos decimales
+    uint8 public immutable wethDecimals;
 
     // --- Config estrategia (tuneable en runtime) ---
     bytes32 public ethUsdPriceFeedId;       // feed ETH/USD
@@ -66,8 +67,7 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
         WETH  = IERC20(_weth);
         pyth  = IPyth(_pyth);
         router= IUniswapV2Router02(_router);
-
-        // Auto-detect decimales de PYUSD y cachea (gas-save)
+        wethDecimals = IERC20Metadata(_weth).decimals();
         pyusdDecimals = IERC20Metadata(_pyusd).decimals();
 
         // Set inicial
@@ -139,7 +139,16 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
         uint256 expectedOut1e18 = (amountIn1e18 * 1e18) / price1e18;
         uint256 minOut1e18 = (expectedOut1e18 * (10_000 - slippageBps)) / 10_000;
 
-        // 6) Approve + swap (V2)
+
+        uint256 minOut;
+        if (wethDecimals == 18) {
+            minOut = minOut1e18;
+        } else if (wethDecimals < 18) {
+            minOut = minOut1e18 / (10 ** uint256(18 - wethDecimals));
+        } else {
+            minOut = minOut1e18 * (10 ** uint256(wethDecimals - 18));
+        }
+
         PYUSD.forceApprove(address(router), amountIn);
 
         
