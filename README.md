@@ -1,14 +1,27 @@
 # Parmelia
 
-Proximamente agregar una descripcion sobre lo que trata el proyecto.
+Parmelia es una plataforma de gestión de treasury DeFi que utiliza smart contracts para automatizar estrategias de inversión basadas en oráculos de precios.
+
+## 🎨 Identidad Visual
+
+Parmelia utiliza una paleta de colores inspirada en la naturaleza:
+- **Cyan** `#A7D4DE` - Color principal
+- **Pink** `#DEA6BC` - Color secundario  
+- **Yellow** `#DED9A6` - Color de acento
+- **White** `#FFFFFF` - Modo claro
+- **Black** `#1E1E1E` - Modo oscuro
+
+**Fuente**: Shippori Antique (Google Fonts)
+
+Para más detalles sobre el sistema de diseño, consulta [`packages/frontend/DESIGN.md`](./packages/frontend/DESIGN.md).
 
 ## 📁 Estructura del Proyecto
 
 ```
 parmelia/
 ├── packages/
-│   ├── contracts/    # Smart contracts con Hardhat 3
-│   ├── frontend/     # Aplicación React + Vite
+│   ├── contracts/    # Smart contracts con Hardhat 3 y Solidity
+│   ├── frontend/     # Aplicación React + Vite + RainbowKit
 │   └── indexer/      # Indexador (en desarrollo)
 ├── package.json
 └── pnpm-workspace.yaml

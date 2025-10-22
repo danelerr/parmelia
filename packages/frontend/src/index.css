@@ -1,15 +1,29 @@
 @import "tailwindcss";
 @import url('https://fonts.googleapis.com/css2?family=Shippori+Antique&display=swap');
 
-
 :root {
+  /* Parmelia Color Palette */
+  --parmelia-cyan: #a7d4de;
+  --parmelia-pink: #dea6bc;
+  --parmelia-yellow: #ded9a6;
+  --parmelia-white: #ffffff;
+  --parmelia-black: #1e1e1e;
+  
+  /* Light mode (default) */
+  --color-background: var(--parmelia-white);
+  --color-text: var(--parmelia-black);
+  --color-primary: var(--parmelia-cyan);
+  --color-secondary: var(--parmelia-pink);
+  --color-accent: var(--parmelia-yellow);
+  
+  /* Typography */
   font-family: "Shippori Antique", sans-serif;
   line-height: 1.5;
   font-weight: 400;
   font-style: normal;
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
+  
+  color: var(--color-text);
+  background-color: var(--color-background);
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -17,13 +31,13 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-background: var(--parmelia-black);
+    --color-text: var(--parmelia-white);
+    color: var(--color-text);
+    background-color: var(--color-background);
+  }
 }
 
 body {
@@ -32,11 +46,30 @@ body {
   place-items: center;
   min-width: 320px;
   min-height: 100vh;
+  background-color: var(--color-background);
+  color: var(--color-text);
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+a {
+  font-weight: 500;
+  color: var(--color-primary);
+  text-decoration: inherit;
+  transition: color 0.3s ease;
+}
+
+a:hover {
+  color: var(--color-secondary);
 }
 
 h1 {
   font-size: 3.2em;
   line-height: 1.1;
+  color: var(--color-text);
+}
+
+h2, h3, h4, h5, h6 {
+  color: var(--color-text);
 }
 
 button {
@@ -46,27 +79,49 @@ button {
   font-size: 1em;
   font-weight: 500;
   font-family: inherit;
-  background-color: #1a1a1a;
+  background-color: var(--color-primary);
+  color: var(--parmelia-black);
   cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
+  transition: all 0.25s ease;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
+button:hover {
+  background-color: var(--color-secondary);
+  border-color: var(--color-accent);
+  transform: translateY(-2px);
 }
+
+button:active {
+  transform: translateY(0);
+}
+
+button:focus,
+button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Utility classes for Parmelia colors */
+.bg-parmelia-cyan { background-color: var(--parmelia-cyan); }
+.bg-parmelia-pink { background-color: var(--parmelia-pink); }
+.bg-parmelia-yellow { background-color: var(--parmelia-yellow); }
+.bg-parmelia-white { background-color: var(--parmelia-white); }
+.bg-parmelia-black { background-color: var(--parmelia-black); }
+
+.text-parmelia-cyan { color: var(--parmelia-cyan); }
+.text-parmelia-pink { color: var(--parmelia-pink); }
+.text-parmelia-yellow { color: var(--parmelia-yellow); }
+.text-parmelia-white { color: var(--parmelia-white); }
+.text-parmelia-black { color: var(--parmelia-black); }
+
+.border-parmelia-cyan { border-color: var(--parmelia-cyan); }
+.border-parmelia-pink { border-color: var(--parmelia-pink); }
+.border-parmelia-yellow { border-color: var(--parmelia-yellow); }
+
+
