@@ -16,6 +16,11 @@ import "@pythnetwork/pyth-sdk-solidity/PythStructs.sol";
 import '@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol';
 import '@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol';
 
+// Uniswap V3 Factory para validar pools
+interface IUniswapV3Factory {
+    function getPool(address tokenA, address tokenB, uint24 fee) external view returns (address pool);
+}
+
 
 contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -25,6 +30,7 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
     IERC20 public immutable WETH;
     IPyth  public immutable pyth;
     ISwapRouter public immutable swapRouter;
+    IUniswapV3Factory public immutable uniswapFactory;
     uint8  public immutable pyusdDecimals; // gas-save: cacheamos decimales
     uint8  public immutable wethDecimals;
 
@@ -36,7 +42,9 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
     uint256 public maxPriceAge;             // segundos
     uint256 public confMultiplier;          // 0..3: multiplica "conf" como amortiguador
     uint256 public execRewardBps;           // 0..100 (basis points) recompensa al ejecutor en PYUSD
-    uint24  public poolFee;  
+    uint24  public poolFee;                 // Uniswap V3 fee tier
+    uint256 public swapDeadline;            // deadline para swaps (segundos desde tx)
+    uint256 public maxSlippageBps;          // máximo slippage permitido vs precio oráculo (100 = 1%)  
 
     // --- Eventos ---
     event Deposited(address indexed user, uint256 amount, uint256 ts);
@@ -50,6 +58,8 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
     error PriceTooOld();
     error PriceAboveThreshold();
     error NothingToDo();
+    error SlippageTooHigh();
+    error PoolNotFound();
 
     // ---------- CONSTRUCTOR CORTO ----------
     constructor(
@@ -57,13 +67,15 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
         address _weth,
         address _pyth,
         address _swapRouter,
+        address _uniswapFactory,
         bytes32 _ethUsdFeedId
     ) Ownable(msg.sender) {
         require(
             _pyusd != address(0) &&
             _weth  != address(0) &&
             _pyth  != address(0) &&
-            _swapRouter != address(0),
+            _swapRouter != address(0) &&
+            _uniswapFactory != address(0),
             "zero addr"
         );
 
@@ -71,6 +83,7 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
         WETH  = IERC20(_weth);
         pyth  = IPyth(_pyth);
         swapRouter = ISwapRouter(_swapRouter);
+        uniswapFactory = IUniswapV3Factory(_uniswapFactory);
         wethDecimals = IERC20Metadata(_weth).decimals();
         pyusdDecimals = IERC20Metadata(_pyusd).decimals();
 
@@ -83,6 +96,8 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
         confMultiplier     = 0;                               // 0 = no usar conf
         execRewardBps      = 0;                               // 0 = sin recompensa
         poolFee            = 3000;                            // 0.3% (fee tier más común)
+        swapDeadline       = 600;                             // 10 minutos
+        maxSlippageBps     = 200;                             // 2% máximo slippage permitido
     }
 
     // --- Fondos ---
@@ -119,12 +134,15 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
         // 2) Leer precio "fresco" con límite de antigüedad
         PythStructs.Price memory px = pyth.getPriceNoOlderThan(ethUsdPriceFeedId, maxPriceAge);
         require(px.price > 0, "bad price");
+        require(px.publishTime > 0, "invalid publishTime");
 
         uint256 price1e18 = _scaleTo1e18_signed(px.price, px.expo); // ETH/USD * 1e18
 
         // Opcional: endurecer usando "conf" (intervalo de confianza)
         if (confMultiplier > 0) {
             uint256 conf1e18 = _scaleTo1e18_unsigned(px.conf, px.expo);
+            // Validar que conf no sea excesivamente alto (max 10% del precio)
+            require(conf1e18 < price1e18 / 10, "conf too high");
             // Precio ajustado al alza → más conservador al estimar WETH out
             price1e18 += confMultiplier * conf1e18;
         }
@@ -154,7 +172,11 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
             minOut = minOut1e18 * (10 ** uint256(wethDecimals - 18));
         }
 
-        // 6) Approve + swap (V3 exactInputSingle)
+        // 6) Validar que existe el pool con el fee configurado
+        address pool = uniswapFactory.getPool(address(PYUSD), address(WETH), poolFee);
+        if (pool == address(0)) revert PoolNotFound();
+
+        // 7) Approve + swap (V3 exactInputSingle)
         PYUSD.forceApprove(address(swapRouter), amountIn);
 
         ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({
@@ -162,7 +184,7 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
             tokenOut: address(WETH),
             fee: poolFee,
             recipient: address(this),
-            deadline: block.timestamp + 300,
+            deadline: block.timestamp + swapDeadline,
             amountIn: amountIn,
             amountOutMinimum: minOut,
             sqrtPriceLimitX96: 0 // sin límite de precio
@@ -170,8 +192,12 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
 
         uint256 amountOut = swapRouter.exactInputSingle(params);
 
+        // 8) Validación post-swap: verificar que el slippage real no exceda el máximo
+        //    Slippage real = (expectedOut - amountOut) / expectedOut * 10000
+        uint256 actualSlippageBps = ((expectedOut1e18 - (amountOut * (10 ** (18 - wethDecimals)))) * 10_000) / expectedOut1e18;
+        if (actualSlippageBps > maxSlippageBps) revert SlippageTooHigh();
 
-        // 7) Reward para el ejecutor (opcional)
+        // 9) Reward para el ejecutor (opcional)
         if (execRewardBps > 0) {
             uint256 reward = (amountIn * execRewardBps) / 10_000;
             if (reward > 0 && PYUSD.balanceOf(address(this)) >= reward) {
@@ -195,6 +221,7 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
     ) external onlyOwner {
         require(_slippageBps <= 10_000 && _maxEthPriceUsd1e18 > 0, "bad params");
         require(_execRewardBps <= 200, "reward too high"); // máx 2% por seguridad
+        require(_confMultiplier <= 3, "conf multiplier too high");
         ethUsdPriceFeedId  = _feedId;
         maxEthPriceUsd1e18 = _maxEthPriceUsd1e18;
         swapChunkPYUSD     = _swapChunkPYUSD;
@@ -205,13 +232,17 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
         emit StrategyParamsUpdated();
     }
 
-    /// @notice Cambia el pool fee de Uniswap V3
+    /// @notice Cambia el pool fee de Uniswap V3 (valida que el pool exista)
     /// @param _poolFee Fee tier: 500 (0.05%), 3000 (0.3%), 10000 (1%)
     function setPoolFee(uint24 _poolFee) external onlyOwner {
         require(
             _poolFee == 500 || _poolFee == 3000 || _poolFee == 10000,
             "invalid fee"
         );
+        // Validar que existe el pool con este fee
+        address pool = uniswapFactory.getPool(address(PYUSD), address(WETH), _poolFee);
+        if (pool == address(0)) revert PoolNotFound();
+        
         poolFee = _poolFee;
         emit StrategyParamsUpdated();
     }
@@ -223,6 +254,8 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
     function setSlippageBps(uint256 v)        external onlyOwner { require(v <= 10_000, "bad"); slippageBps = v; emit StrategyParamsUpdated(); }
     function setMaxPriceAge(uint256 v)        external onlyOwner { maxPriceAge = v; emit StrategyParamsUpdated(); }
     function setFeedId(bytes32 id)            external onlyOwner { ethUsdPriceFeedId = id; emit StrategyParamsUpdated(); }
+    function setSwapDeadline(uint256 v)       external onlyOwner { require(v >= 60 && v <= 3600, "deadline range: 60-3600s"); swapDeadline = v; emit StrategyParamsUpdated(); }
+    function setMaxSlippageBps(uint256 v)     external onlyOwner { require(v <= 1000, "max 10%"); maxSlippageBps = v; emit StrategyParamsUpdated(); }
 
     function setConfMultiplier(uint256 v) external onlyOwner {
         require(v <= 3, "too big");
@@ -265,6 +298,15 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
     function balances() external view returns (uint256 pyusd, uint256 weth) {
         pyusd = PYUSD.balanceOf(address(this));
         weth  = WETH.balanceOf(address(this));
+    }
+
+    /// @notice Verifica si existe un pool para el par PYUSD/WETH con un fee específico
+    /// @param fee Fee tier a verificar (500, 3000, 10000)
+    /// @return exists True si el pool existe
+    /// @return poolAddress Dirección del pool (address(0) si no existe)
+    function checkPoolExists(uint24 fee) external view returns (bool exists, address poolAddress) {
+        poolAddress = uniswapFactory.getPool(address(PYUSD), address(WETH), fee);
+        exists = poolAddress != address(0);
     }
 
     receive() external payable {}
