@@ -7,11 +7,14 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "./interfaces/IUniswapV2Router02.sol";
 
 // Pyth SDK oficial (pull integration)
 import "@pythnetwork/pyth-sdk-solidity/IPyth.sol";
 import "@pythnetwork/pyth-sdk-solidity/PythStructs.sol";
+
+// Uniswap V3
+import '@uniswap/v3-periphery/contracts/interfaces/ISwapRouter.sol';
+import '@uniswap/v3-periphery/contracts/libraries/TransferHelper.sol';
 
 
 contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
@@ -21,11 +24,9 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
     IERC20 public immutable PYUSD;
     IERC20 public immutable WETH;
     IPyth  public immutable pyth;
-    IUniswapV2Router02 public immutable router;
+    ISwapRouter public immutable swapRouter;
     uint8  public immutable pyusdDecimals; // gas-save: cacheamos decimales
-    uint8 public immutable wethDecimals;
-    address[] public swapPath;
-
+    uint8  public immutable wethDecimals;
 
     // --- Config estrategia (tuneable en runtime) ---
     bytes32 public ethUsdPriceFeedId;       // feed ETH/USD
@@ -35,6 +36,7 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
     uint256 public maxPriceAge;             // segundos
     uint256 public confMultiplier;          // 0..3: multiplica "conf" como amortiguador
     uint256 public execRewardBps;           // 0..100 (basis points) recompensa al ejecutor en PYUSD
+    uint24  public poolFee;  
 
     // --- Eventos ---
     event Deposited(address indexed user, uint256 amount, uint256 ts);
@@ -54,27 +56,23 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
         address _pyusd,
         address _weth,
         address _pyth,
-        address _router,
+        address _swapRouter,
         bytes32 _ethUsdFeedId
     ) Ownable(msg.sender) {
         require(
             _pyusd != address(0) &&
             _weth  != address(0) &&
             _pyth  != address(0) &&
-            _router!= address(0),
+            _swapRouter != address(0),
             "zero addr"
         );
 
         PYUSD = IERC20(_pyusd);
         WETH  = IERC20(_weth);
         pyth  = IPyth(_pyth);
-        router= IUniswapV2Router02(_router);
+        swapRouter = ISwapRouter(_swapRouter);
         wethDecimals = IERC20Metadata(_weth).decimals();
         pyusdDecimals = IERC20Metadata(_pyusd).decimals();
-
-        // Default route: PYUSD -> WETH
-        swapPath.push(address(PYUSD));
-        swapPath.push(address(WETH));
 
         // Set inicial
         ethUsdPriceFeedId  = _ethUsdFeedId;
@@ -84,6 +82,7 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
         maxPriceAge        = 60;                              // 60 s
         confMultiplier     = 0;                               // 0 = no usar conf
         execRewardBps      = 0;                               // 0 = sin recompensa
+        poolFee            = 3000;                            // 0.3% (fee tier más común)
     }
 
     // --- Fondos ---
@@ -145,7 +144,7 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
         uint256 expectedOut1e18 = (amountIn1e18 * 1e18) / price1e18;
         uint256 minOut1e18 = (expectedOut1e18 * (10_000 - slippageBps)) / 10_000;
 
-
+        // Ajustar minOut a los decimales de WETH
         uint256 minOut;
         if (wethDecimals == 18) {
             minOut = minOut1e18;
@@ -155,20 +154,21 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
             minOut = minOut1e18 * (10 ** uint256(wethDecimals - 18));
         }
 
-        PYUSD.forceApprove(address(router), amountIn);
+        // 6) Approve + swap (V3 exactInputSingle)
+        PYUSD.forceApprove(address(swapRouter), amountIn);
 
-        
-        address[] memory path = new address[](2);
-        path[0] = address(PYUSD);
-        path[1] = address(WETH);
+        ISwapRouter.ExactInputSingleParams memory params = ISwapRouter.ExactInputSingleParams({
+            tokenIn: address(PYUSD),
+            tokenOut: address(WETH),
+            fee: poolFee,
+            recipient: address(this),
+            deadline: block.timestamp + 300,
+            amountIn: amountIn,
+            amountOutMinimum: minOut,
+            sqrtPriceLimitX96: 0 // sin límite de precio
+        });
 
-        uint256[] memory amounts = router.swapExactTokensForTokens(
-            amountIn,
-            minOut,
-            swapPath,
-            address(this),
-            block.timestamp + 300      // 5 min de ventana
-        );
+        uint256 amountOut = swapRouter.exactInputSingle(params);
 
 
         // 7) Reward para el ejecutor (opcional)
@@ -178,7 +178,8 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
                 PYUSD.safeTransfer(msg.sender, reward);
             }
         }
-        emit StrategyExecuted(amounts[0], amounts[1], price1e18, block.timestamp);
+        
+        emit StrategyExecuted(amountIn, amountOut, price1e18, block.timestamp);
     }
 
     // --- Admin (setters) ---
@@ -204,12 +205,14 @@ contract ParmeliaTreasury is Ownable, Pausable, ReentrancyGuard {
         emit StrategyParamsUpdated();
     }
 
-    function setSwapPath(address[] calldata path) external onlyOwner {
-        require(path.length >= 2, "bad len");
-        require(path[0] == address(PYUSD), "start PYUSD");
-        require(path[path.length - 1] == address(WETH), "end WETH");
-        delete swapPath;
-        for (uint256 i = 0; i < path.length; i++) swapPath.push(path[i]);
+    /// @notice Cambia el pool fee de Uniswap V3
+    /// @param _poolFee Fee tier: 500 (0.05%), 3000 (0.3%), 10000 (1%)
+    function setPoolFee(uint24 _poolFee) external onlyOwner {
+        require(
+            _poolFee == 500 || _poolFee == 3000 || _poolFee == 10000,
+            "invalid fee"
+        );
+        poolFee = _poolFee;
         emit StrategyParamsUpdated();
     }
 
